@@ -7,14 +7,26 @@ require("dotenv").config();
 
 const router = express.Router();
 
-const razorpay = new Razorpay({
-  key_id: process.env.RAZORPAY_KEY_ID,
-  key_secret: process.env.RAZORPAY_KEY_SECRET,
-});
+// Created lazily, only when a payment route actually runs \u2014 NOT at server
+// startup. Razorpay's SDK throws immediately if the key is missing, and doing
+// that at the top of the file would crash the entire server on boot even
+// though only the payment feature needs it.
+function getRazorpay() {
+  if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) return null;
+  return new Razorpay({
+    key_id: process.env.RAZORPAY_KEY_ID,
+    key_secret: process.env.RAZORPAY_KEY_SECRET,
+  });
+}
 
 // POST /api/payments/create-order  { offerId }
 // Creates a real Razorpay order (test mode by default) for an accepted offer.
 router.post("/create-order", requireAuth, async (req, res) => {
+  const razorpay = getRazorpay();
+  if (!razorpay) {
+    return res.status(503).json({ error: "Payments aren't configured yet \u2014 add RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET to enable this." });
+  }
+
   const { offerId } = req.body;
   if (!offerId) return res.status(400).json({ error: "offerId is required" });
 
@@ -61,6 +73,10 @@ router.post("/create-order", requireAuth, async (req, res) => {
 // Verifies Razorpay's HMAC signature (this is the real, mandatory security check
 // that confirms the payment actually came from Razorpay and wasn't spoofed).
 router.post("/verify", requireAuth, async (req, res) => {
+  if (!process.env.RAZORPAY_KEY_SECRET) {
+    return res.status(503).json({ error: "Payments aren't configured yet \u2014 add RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET to enable this." });
+  }
+
   const { orderId, paymentId, signature } = req.body;
   if (!orderId || !paymentId || !signature) {
     return res.status(400).json({ error: "orderId, paymentId and signature are required" });
@@ -98,3 +114,4 @@ router.post("/verify", requireAuth, async (req, res) => {
 });
 
 module.exports = router;
+
