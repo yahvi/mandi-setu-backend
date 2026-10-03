@@ -192,8 +192,7 @@ async function fetchJson(
   headers = {},
   timeoutMs = 15000
 ) {
-  console.log(`Requesting ${label}`);
-
+console.log("Requesting " + label);
   const controller =
     new AbortController();
 
