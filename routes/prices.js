@@ -91,11 +91,11 @@ function getIndiaDate(offsetDays = 0) {
   ).padStart(2, "0");
 
   return {
-    year,
-    month: Number(month),
-    day,
-    date: `${year}-${month}-${day}`,
-  };
+  year: year,
+  month: Number(month),
+  day: day,
+  date: String(year) + "-" + month + "-" + day
+};
 }
 
 // ============================================================
