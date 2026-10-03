@@ -1,105 +1,13 @@
-```javascript
 const express = require("express");
 const pool = require("../db");
 const { requireAuth } = require("../middleware/auth");
 
 const router = express.Router();
 
-// ============================================================
-// CONFIGURATION
-// ============================================================
-
 const MAHARASHTRA_STATE_ID = 20;
 
-// Official Government OGD mandi-price resource
-const OGD_RESOURCE_ID =
-  "9ef84268-d588-465a-a308-a864a43d0070";
-
-const OGD_API_KEY = process.env.DATA_GOV_API_KEY || "";
-
-const OGD_BASE_URL =
-  "https://api.data.gov.in/resource/" + OGD_RESOURCE_ID;
-
 // ============================================================
-// DISTANCE
-// ============================================================
-
-function distanceKm(lat1, lng1, lat2, lng2) {
-  if (
-    lat1 == null ||
-    lng1 == null ||
-    lat2 == null ||
-    lng2 == null
-  ) {
-    return null;
-  }
-
-  const R = 6371;
-
-  const dLat = ((lat2 - lat1) * Math.PI) / 180;
-  const dLng = ((lng2 - lng1) * Math.PI) / 180;
-
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos((lat1 * Math.PI) / 180) *
-      Math.cos((lat2 * Math.PI) / 180) *
-      Math.sin(dLng / 2) ** 2;
-
-  return R * 2 * Math.atan2(
-    Math.sqrt(a),
-    Math.sqrt(1 - a)
-  );
-}
-
-// ============================================================
-// TRANSPORT COST
-// ============================================================
-
-function estimateTransportCost(km) {
-  if (km == null) return null;
-
-  const baseFee = 40;
-  const perKm = 3.2;
-
-  return Math.round(baseFee + km * perKm);
-}
-
-// ============================================================
-// INDIA DATE
-// ============================================================
-
-function getIndiaDate(offsetDays = 0) {
-  const now = new Date();
-
-  const indiaString = now.toLocaleString("en-US", {
-    timeZone: "Asia/Kolkata",
-  });
-
-  const indiaNow = new Date(indiaString);
-
-  indiaNow.setDate(
-    indiaNow.getDate() + offsetDays
-  );
-
-  const year = indiaNow.getFullYear();
-  const month = String(
-    indiaNow.getMonth() + 1
-  ).padStart(2, "0");
-
-  const day = String(
-    indiaNow.getDate()
-  ).padStart(2, "0");
-
-  return {
-  year: year,
-  month: Number(month),
-  day: day,
-  date: String(year) + "-" + month + "-" + day
-};
-}
-
-// ============================================================
-// CROP NORMALIZATION
+// BASIC HELPERS
 // ============================================================
 
 function normalizeCrop(value) {
@@ -109,428 +17,291 @@ function normalizeCrop(value) {
     .replace(/\s+/g, " ");
 }
 
-// ============================================================
-// NUMBER HELPER
-// ============================================================
+function normalizeMarketName(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\bapmc\b/g, "")
+    .replace(/[^a-z0-9]/g, "");
+}
 
 function toNumber(value) {
-  if (
-    value === null ||
-    value === undefined ||
-    value === ""
-  ) {
+  if (value === null || value === undefined || value === "") {
     return null;
   }
 
-  const n = Number(
-    String(value)
-      .replace(/,/g, "")
-      .replace(/₹/g, "")
-      .trim()
-  );
+  var cleaned = String(value)
+    .replace(/,/g, "")
+    .replace(/₹/g, "")
+    .trim();
 
-  return Number.isFinite(n) ? n : null;
+  var number = Number(cleaned);
+
+  if (!Number.isFinite(number)) {
+    return null;
+  }
+
+  return number;
 }
 
 // ============================================================
-// FIRST AVAILABLE PROPERTY
+// INDIA DATE
 // ============================================================
 
-function firstValue(item, keys) {
-  for (const key of keys) {
-    if (
-      item[key] !== undefined &&
-      item[key] !== null &&
-      item[key] !== ""
-    ) {
-      return item[key];
+function getIndiaDate(offsetDays) {
+  var offset = Number(offsetDays || 0);
+
+  var now = new Date();
+
+  var indiaString = now.toLocaleString("en-US", {
+    timeZone: "Asia/Kolkata",
+  });
+
+  var indiaNow = new Date(indiaString);
+
+  if (offset !== 0) {
+    indiaNow.setDate(indiaNow.getDate() + offset);
+  }
+
+  var year = indiaNow.getFullYear();
+  var month = String(indiaNow.getMonth() + 1).padStart(2, "0");
+  var day = String(indiaNow.getDate()).padStart(2, "0");
+
+  return {
+    year: year,
+    month: Number(month),
+    day: day,
+    date: year + "-" + month + "-" + day,
+  };
+}
+
+// ============================================================
+// DATE NORMALIZATION
+// ============================================================
+
+function normalizeDate(value) {
+  if (!value) {
+    return null;
+  }
+
+  if (value instanceof Date) {
+    if (Number.isNaN(value.getTime())) {
+      return null;
     }
+
+    return value.toISOString().slice(0, 10);
+  }
+
+  var text = String(value).trim();
+
+  if (!text) {
+    return null;
+  }
+
+  // YYYY-MM-DD
+  var isoMatch = text.match(/^(\d{4})-(\d{2})-(\d{2})/);
+
+  if (isoMatch) {
+    return (
+      isoMatch[1] +
+      "-" +
+      isoMatch[2] +
+      "-" +
+      isoMatch[3]
+    );
+  }
+
+  // DD/MM/YYYY
+  var slashMatch = text.match(
+    /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/
+  );
+
+  if (slashMatch) {
+    return (
+      slashMatch[3] +
+      "-" +
+      String(slashMatch[2]).padStart(2, "0") +
+      "-" +
+      String(slashMatch[1]).padStart(2, "0")
+    );
+  }
+
+  // DD-MM-YYYY
+  var dashMatch = text.match(
+    /^(\d{1,2})-(\d{1,2})-(\d{4})$/
+  );
+
+  if (dashMatch) {
+    return (
+      dashMatch[3] +
+      "-" +
+      String(dashMatch[2]).padStart(2, "0") +
+      "-" +
+      String(dashMatch[1]).padStart(2, "0")
+    );
+  }
+
+  var parsed = new Date(text);
+
+  if (!Number.isNaN(parsed.getTime())) {
+    return parsed.toISOString().slice(0, 10);
   }
 
   return null;
 }
 
 // ============================================================
-// RECURSIVE OBJECT COLLECTION
+// DISTANCE
 // ============================================================
 
-function collectObjects(value, output = []) {
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      collectObjects(item, output);
-    }
-
-    return output;
-  }
-
+function distanceKm(lat1, lng1, lat2, lng2) {
   if (
-    value &&
-    typeof value === "object"
+    lat1 === null ||
+    lat1 === undefined ||
+    lng1 === null ||
+    lng1 === undefined ||
+    lat2 === null ||
+    lat2 === undefined ||
+    lng2 === null ||
+    lng2 === undefined
   ) {
-    output.push(value);
-
-    for (const child of Object.values(value)) {
-      if (
-        child &&
-        typeof child === "object"
-      ) {
-        collectObjects(child, output);
-      }
-    }
-  }
-
-  return output;
-}
-
-// ============================================================
-// GENERIC FETCH WITH TIMEOUT
-// ============================================================
-
-async function fetchJson(
-  url,
-  label,
-  headers = {},
-  timeoutMs = 15000
-) {
-console.log("Requesting " + label);
-  const controller =
-    new AbortController();
-
-  const timeout = setTimeout(() => {
-    controller.abort();
-  }, timeoutMs);
-
-  try {
-    const response = await fetch(url, {
-      method: "GET",
-      signal: controller.signal,
-      headers: {
-        Accept:
-          "application/json, text/plain, */*",
-        ...headers,
-      },
-    });
-
-    const text = await response.text();
-
-    if (!response.ok) {
-      throw new Error(
-        `HTTP ${response.status}: ${text.slice(
-          0,
-          300
-        )}`
-      );
-    }
-
-    if (!text.trim()) {
-      throw new Error(
-        "Empty response received"
-      );
-    }
-
-    try {
-      return JSON.parse(text);
-    } catch {
-      throw new Error(
-        `Invalid JSON response: ${text.slice(
-          0,
-          300
-        )}`
-      );
-    }
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-// ============================================================
-// OGD / DATA.GOV.IN
-// ============================================================
-
-function buildOgdUrl(crop, date) {
-  const params =
-    new URLSearchParams();
-
-  params.set(
-    "api-key",
-    OGD_API_KEY
-  );
-
-  params.set("format", "json");
-
-  params.set("limit", "10000");
-
-  params.set("offset", "0");
-
-  // Official OGD filters
-  params.set(
-    "filters[state]",
-    "Maharashtra"
-  );
-
-  params.set(
-    "filters[commodity]",
-    crop
-  );
-
-  return `${OGD_BASE_URL}?${params.toString()}`;
-}
-
-async function fetchOgdMandiData(
-  crop,
-  date
-) {
-  if (!OGD_API_KEY) {
-    console.warn(
-      "DATA_GOV_API_KEY is not configured. Skipping OGD."
-    );
-
     return null;
   }
 
-  const url = buildOgdUrl(
-    crop,
-    date
-  );
+  var aLat = Number(lat1);
+  var aLng = Number(lng1);
+  var bLat = Number(lat2);
+  var bLng = Number(lng2);
 
-  return fetchJson(
-    url,
-    `Government OGD mandi data for ${crop}`,
-    {
-      "User-Agent":
-        "MandiSetu/1.0",
-    },
-    15000
+  if (
+    !Number.isFinite(aLat) ||
+    !Number.isFinite(aLng) ||
+    !Number.isFinite(bLat) ||
+    !Number.isFinite(bLng)
+  ) {
+    return null;
+  }
+
+  var earthRadius = 6371;
+
+  var dLat = ((bLat - aLat) * Math.PI) / 180;
+  var dLng = ((bLng - aLng) * Math.PI) / 180;
+
+  var a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos((aLat * Math.PI) / 180) *
+      Math.cos((bLat * Math.PI) / 180) *
+      Math.sin(dLng / 2) *
+      Math.sin(dLng / 2);
+
+  return (
+    earthRadius *
+    2 *
+    Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
   );
 }
 
 // ============================================================
-// OGD ROW EXTRACTION
+// TRANSPORT COST
 // ============================================================
 
-function extractOgdRows(
-  report,
-  requestedCrop,
-  requestedDate
-) {
-  const wantedCrop =
-    normalizeCrop(requestedCrop);
-
-  let records = [];
-
-  if (
-    report &&
-    Array.isArray(report.records)
-  ) {
-    records = report.records;
-  } else {
-    records =
-      collectObjects(report);
+function estimateTransportCost(km) {
+  if (km === null || km === undefined) {
+    return null;
   }
 
-  const rows = [];
-
-  for (const item of records) {
-    const commodity =
-      firstValue(item, [
-        "commodity",
-        "Commodity",
-        "commodity_name",
-        "Commodity Name",
-        "crop",
-        "cropName",
-      ]);
-
-    const state =
-      firstValue(item, [
-        "state",
-        "State",
-        "state_name",
-        "State Name",
-      ]);
-
-    const mandi =
-      firstValue(item, [
-        "market",
-        "Market",
-        "market_name",
-        "Market Name",
-        "market_center",
-        "Market Center",
-        "mandi",
-        "mandi_name",
-        "Mandi",
-      ]);
-
-    const modalPrice =
-      firstValue(item, [
-        "modal_price",
-        "Modal Price",
-        "Modal Price (Rs./Quintal)",
-        "modalPrice",
-        "modal",
-        "Modal",
-      ]);
-
-    if (
-      !commodity ||
-      !mandi ||
-      modalPrice == null
-    ) {
-      continue;
-    }
-
-    const normalizedCommodity =
-      normalizeCrop(commodity);
-
-    const cropMatches =
-      normalizedCommodity ===
-        wantedCrop ||
-      normalizedCommodity.includes(
-        wantedCrop
-      ) ||
-      wantedCrop.includes(
-        normalizedCommodity
-      );
-
-    if (!cropMatches) {
-      continue;
-    }
-
-    if (
-      state &&
-      normalizeCrop(state) !==
-        "maharashtra"
-    ) {
-      continue;
-    }
-
-    const price =
-      toNumber(modalPrice);
-
-    if (
-      price == null ||
-      price <= 0
-    ) {
-      continue;
-    }
-
-    const minimumPrice =
-      toNumber(
-        firstValue(item, [
-          "min_price",
-          "Min Price",
-          "minimum_price",
-          "Minimum Price",
-          "minPrice",
-        ])
-      );
-
-    const maximumPrice =
-      toNumber(
-        firstValue(item, [
-          "max_price",
-          "Max Price",
-          "maximum_price",
-          "Maximum Price",
-          "maxPrice",
-        ])
-      );
-
-    const arrivals =
-      toNumber(
-        firstValue(item, [
-          "arrival",
-          "arrivals",
-          "Arrival",
-          "Arrivals",
-          "arrival_quantity",
-          "Arrival Quantity",
-        ])
-      );
-
-    const recordedDate =
-      firstValue(item, [
-        "arrival_date",
-        "Arrival_Date",
-        "Arrival Date",
-        "date",
-        "Date",
-        "report_date",
-        "Report Date",
-      ]) ||
-      requestedDate;
-
-    rows.push({
-      mandi: String(mandi).trim(),
-      price,
-      minimumPrice,
-      maximumPrice,
-      arrivals,
-      recordedDate,
-      trend: "steady",
-      source: "data.gov.in",
-    });
+  if (!Number.isFinite(Number(km))) {
+    return null;
   }
 
-  // Deduplicate by mandi
-  const unique =
-    new Map();
+  var baseFee = 40;
+  var perKm = 3.2;
 
-  for (const row of rows) {
-    const key =
-      normalizeMarketName(
-        row.mandi
-      );
-
-    if (!unique.has(key)) {
-      unique.set(key, row);
-    }
-  }
-
-  return Array.from(
-    unique.values()
-  );
+  return Math.round(baseFee + Number(km) * perKm);
 }
 
 // ============================================================
 // AGMARKNET HEADERS
 // ============================================================
 
-function agmarknetHeaders() {
+function getAgmarknetHeaders() {
   return {
-    Accept:
-      "application/json, text/plain, */*",
-
-    Origin:
-      "https://agmarknet.gov.in",
-
-    Referer:
-      "https://agmarknet.gov.in/",
-
+    Accept: "application/json, text/plain, */*",
+    Origin: "https://agmarknet.gov.in",
+    Referer: "https://agmarknet.gov.in/",
     "User-Agent":
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/154.0.0.0 Safari/537.36",
   };
 }
 
 // ============================================================
+// FETCH WITH TIMEOUT
+// ============================================================
+
+async function fetchWithTimeout(url, label) {
+  console.log("Requesting " + label);
+
+  var controller = new AbortController();
+
+  var timeout = setTimeout(function () {
+    controller.abort();
+  }, 15000);
+
+  try {
+    var response = await fetch(url, {
+      method: "GET",
+      headers: getAgmarknetHeaders(),
+      signal: controller.signal,
+    });
+
+    var text = await response.text();
+
+    if (!response.ok) {
+      throw new Error(
+        "HTTP " +
+          response.status +
+          ": " +
+          text.slice(0, 250)
+      );
+    }
+
+    if (!text || !text.trim()) {
+      throw new Error("Empty response received");
+    }
+
+    var json;
+
+    try {
+      json = JSON.parse(text);
+    } catch (parseError) {
+      throw new Error(
+        "Invalid JSON response: " +
+          text.slice(0, 250)
+      );
+    }
+
+    return json;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+// ============================================================
 // AGMARKNET PRIMARY
 // ============================================================
 
-async function fetchAgmarknetStateReport(
-  date
-) {
-  const url =
+async function fetchAgmarknetPrimary(date) {
+  var url =
     "https://api.agmarknet.gov.in/v1/prices-and-arrivals/commodity-market/daily-report-state" +
-    `?date=${encodeURIComponent(date)}` +
-    `&state=${MAHARASHTRA_STATE_ID}` +
+    "?date=" +
+    encodeURIComponent(date) +
+    "&state=" +
+    String(MAHARASHTRA_STATE_ID) +
     "&includeExcel=false";
 
-  return fetchJson(
+  return fetchWithTimeout(
     url,
-    `AGMARKNET Maharashtra report: ${date}`,
-    agmarknetHeaders(),
-    15000
+    "AGMARKNET primary report for " + date
   );
 }
 
@@ -538,25 +309,83 @@ async function fetchAgmarknetStateReport(
 // AGMARKNET SECONDARY
 // ============================================================
 
-async function fetchAgmarknetCommodityWiseStateReport(
-  date
-) {
-  const url =
+async function fetchAgmarknetSecondary(date) {
+  var url =
     "https://api.agmarknet.gov.in/v1/prices-and-arrivals/commodity-wise/daily-report-state" +
-    `?date=${encodeURIComponent(date)}` +
-    `&stateIds=${MAHARASHTRA_STATE_ID}` +
+    "?date=" +
+    encodeURIComponent(date) +
+    "&stateIds=" +
+    String(MAHARASHTRA_STATE_ID) +
     "&includeExcel=false";
 
-  return fetchJson(
+  return fetchWithTimeout(
     url,
-    `AGMARKNET secondary report: ${date}`,
-    agmarknetHeaders(),
-    15000
+    "AGMARKNET secondary report for " + date
   );
 }
 
 // ============================================================
-// AGMARKNET ROW EXTRACTION
+// RECURSIVE OBJECT COLLECTION
+// ============================================================
+
+function collectObjects(value, output) {
+  var result = output || [];
+
+  if (Array.isArray(value)) {
+    for (var i = 0; i < value.length; i++) {
+      collectObjects(value[i], result);
+    }
+
+    return result;
+  }
+
+  if (
+    value &&
+    typeof value === "object"
+  ) {
+    result.push(value);
+
+    var children = Object.values(value);
+
+    for (var j = 0; j < children.length; j++) {
+      if (
+        children[j] &&
+        typeof children[j] === "object"
+      ) {
+        collectObjects(children[j], result);
+      }
+    }
+  }
+
+  return result;
+}
+
+// ============================================================
+// PROPERTY LOOKUP
+// ============================================================
+
+function firstValue(object, keys) {
+  if (!object || typeof object !== "object") {
+    return null;
+  }
+
+  for (var i = 0; i < keys.length; i++) {
+    var key = keys[i];
+
+    if (
+      object[key] !== undefined &&
+      object[key] !== null &&
+      object[key] !== ""
+    ) {
+      return object[key];
+    }
+  }
+
+  return null;
+}
+
+// ============================================================
+// EXTRACT AGMARKNET DATA
 // ============================================================
 
 function extractAgmarknetRows(
@@ -565,127 +394,122 @@ function extractAgmarknetRows(
   sourceName,
   requestedDate
 ) {
-  const wantedCrop =
-    normalizeCrop(requestedCrop);
+  var wantedCrop = normalizeCrop(requestedCrop);
 
-  const objects =
-    collectObjects(report);
+  if (!report) {
+    return [];
+  }
 
-  const rows = [];
+  var objects = collectObjects(report, []);
+  var rows = [];
 
-  for (const item of objects) {
-    const commodity =
-      firstValue(item, [
-        "commodityName",
-        "commodity",
-        "commodity_name",
-        "crop",
-        "cropName",
-        "crop_name",
-        "Commodity Name",
-        "Commodity",
-      ]);
+  for (var i = 0; i < objects.length; i++) {
+    var item = objects[i];
 
-    const mandi =
-      firstValue(item, [
-        "marketCenter",
-        "marketName",
-        "market",
-        "market_name",
-        "apmc",
-        "mandiName",
-        "mandi",
-        "mandi_name",
-        "Market Center",
-        "Market Name",
-        "Market",
-      ]);
+    var commodity = firstValue(item, [
+      "commodityName",
+      "commodity",
+      "commodity_name",
+      "crop",
+      "cropName",
+      "crop_name",
+      "Commodity Name",
+      "Commodity",
+    ]);
 
-    const modalPrice =
-      firstValue(item, [
-        "modalPrice",
-        "modal_price",
-        "modal",
-        "modalprice",
-        "Modal Price",
-        "ModalPrice",
-        "Modal",
-        "Modal Price (Rs./Quintal)",
-      ]);
+    var mandi = firstValue(item, [
+      "marketCenter",
+      "marketName",
+      "market",
+      "market_name",
+      "apmc",
+      "mandiName",
+      "mandi",
+      "mandi_name",
+      "Market Center",
+      "Market Name",
+      "Market",
+    ]);
+
+    var modalPrice = firstValue(item, [
+      "modalPrice",
+      "modal_price",
+      "modal",
+      "modalprice",
+      "Modal Price",
+      "ModalPrice",
+      "Modal",
+      "Modal Price (Rs./Quintal)",
+    ]);
 
     if (
-      !commodity ||
-      !mandi ||
-      modalPrice == null
+      commodity === null ||
+      commodity === undefined ||
+      mandi === null ||
+      mandi === undefined ||
+      modalPrice === null ||
+      modalPrice === undefined
     ) {
       continue;
     }
 
-    const commodityName =
-      normalizeCrop(
-        commodity
-      );
+    var normalizedCommodity =
+      normalizeCrop(commodity);
 
-    if (
-      commodityName !==
-        wantedCrop &&
-      !commodityName.includes(
-        wantedCrop
-      ) &&
-      !wantedCrop.includes(
-        commodityName
-      )
-    ) {
+    var cropMatches =
+      normalizedCommodity === wantedCrop ||
+      normalizedCommodity.indexOf(wantedCrop) !== -1 ||
+      wantedCrop.indexOf(normalizedCommodity) !== -1;
+
+    if (!cropMatches) {
       continue;
     }
 
-    const price =
-      toNumber(modalPrice);
+    var price = toNumber(modalPrice);
 
     if (
-      price == null ||
+      price === null ||
       price <= 0
     ) {
       continue;
     }
 
-    const minimumPrice =
-      toNumber(
-        firstValue(item, [
-          "minimumPrice",
-          "minPrice",
-          "min_price",
-          "Minimum Price",
-          "Min Price",
-          "Min Price (Rs./Quintal)",
-        ])
-      );
+    var minimumPrice = toNumber(
+      firstValue(item, [
+        "minimumPrice",
+        "minPrice",
+        "min_price",
+        "minimum",
+        "Minimum Price",
+        "Min Price",
+        "Min Price (Rs./Quintal)",
+      ])
+    );
 
-    const maximumPrice =
-      toNumber(
-        firstValue(item, [
-          "maximumPrice",
-          "maxPrice",
-          "max_price",
-          "Maximum Price",
-          "Max Price",
-          "Max Price (Rs./Quintal)",
-        ])
-      );
+    var maximumPrice = toNumber(
+      firstValue(item, [
+        "maximumPrice",
+        "maxPrice",
+        "max_price",
+        "maximum",
+        "Maximum Price",
+        "Max Price",
+        "Max Price (Rs./Quintal)",
+      ])
+    );
 
-    const arrivals =
-      toNumber(
-        firstValue(item, [
-          "arrivals",
-          "arrival",
-          "arrivalsQty",
-          "arrivalQuantity",
-          "Arrival",
-          "Arrivals",
-        ])
-      );
+    var arrivals = toNumber(
+      firstValue(item, [
+        "arrivals",
+        "arrival",
+        "arrivalsQty",
+        "arrivalQuantity",
+        "Arrival",
+        "Arrivals",
+      ])
+    );
 
-    const recordedDate =
+    var sourceDate = normalizeDate(
       firstValue(item, [
         "date",
         "reportDate",
@@ -693,115 +517,109 @@ function extractAgmarknetRows(
         "recorded_date",
         "Date",
         "Report Date",
-      ]) ||
-      requestedDate;
+      ])
+    );
+
+    var mandiName = String(mandi).trim();
+
+    if (!mandiName) {
+      continue;
+    }
 
     rows.push({
-      mandi: String(mandi).trim(),
-      price,
+      mandi: mandiName,
+      price: price,
       trend: "steady",
-      minimumPrice,
-      maximumPrice,
-      arrivals,
-      recordedDate,
+      minimumPrice: minimumPrice,
+      maximumPrice: maximumPrice,
+      arrivals: arrivals,
+      recordedDate:
+        sourceDate || requestedDate,
       source: sourceName,
     });
   }
 
-  const unique =
-    new Map();
+  // ========================================================
+  // REMOVE DUPLICATE MANDIS
+  // ========================================================
 
-  for (const row of rows) {
-    const key =
-      normalizeMarketName(
-        row.mandi
-      );
+  var unique = new Map();
+
+  for (var k = 0; k < rows.length; k++) {
+    var row = rows[k];
+
+    var key = normalizeMarketName(
+      row.mandi
+    );
+
+    if (!key) {
+      continue;
+    }
 
     if (!unique.has(key)) {
       unique.set(key, row);
     }
   }
 
-  return Array.from(
-    unique.values()
-  );
+  return Array.from(unique.values());
 }
 
 // ============================================================
-// MARKET NAME NORMALIZATION
+// LOAD MARKET COORDINATES
 // ============================================================
 
-function normalizeMarketName(
-  name
-) {
-  return String(name || "")
-    .toLowerCase()
-    .replace(/\bapmc\b/g, "")
-    .replace(/[^a-z0-9]/g, "")
-    .trim();
-}
-
-// ============================================================
-// DATABASE COORDINATES
-// ============================================================
-
-async function addDatabaseCoordinates(
-  rows
-) {
-  if (!rows.length) {
-    return rows;
+async function addDatabaseCoordinates(rows) {
+  if (!rows || rows.length === 0) {
+    return [];
   }
 
   try {
-    const result =
-      await pool.query(
-        `SELECT mandi_name, lat, lng
-         FROM mandi_prices
-         WHERE lat IS NOT NULL
-           AND lng IS NOT NULL`
+    var result = await pool.query(
+      "SELECT mandi_name, lat, lng " +
+        "FROM mandi_prices " +
+        "WHERE lat IS NOT NULL " +
+        "AND lng IS NOT NULL"
+    );
+
+    var coordinates = new Map();
+
+    for (var i = 0; i < result.rows.length; i++) {
+      var databaseRow = result.rows[i];
+
+      var key = normalizeMarketName(
+        databaseRow.mandi_name
       );
 
-    const coordinates =
-      new Map();
-
-    for (const row of result.rows) {
-      const key =
-        normalizeMarketName(
-          row.mandi_name
-        );
+      if (!key) {
+        continue;
+      }
 
       if (!coordinates.has(key)) {
         coordinates.set(key, {
-          lat: Number(row.lat),
-          lng: Number(row.lng),
+          lat: toNumber(databaseRow.lat),
+          lng: toNumber(databaseRow.lng),
         });
       }
     }
 
-    return rows.map(
-      (row) => {
-        const location =
-          coordinates.get(
-            normalizeMarketName(
-              row.mandi
-            )
-          );
+    return rows.map(function (row) {
+      var location = coordinates.get(
+        normalizeMarketName(row.mandi)
+      );
 
-        if (!location) {
-          return row;
-        }
-
-        return {
-          ...row,
-          _lat: location.lat,
-          _lng: location.lng,
-        };
+      if (!location) {
+        return row;
       }
-    );
-  } catch (err) {
+
+      return Object.assign({}, row, {
+        _lat: location.lat,
+        _lng: location.lng,
+      });
+    });
+  } catch (error) {
     console.error(
       "Could not load market coordinates:",
-      err.message
+      error.message
     );
 
     return rows;
@@ -809,79 +627,81 @@ async function addDatabaseCoordinates(
 }
 
 // ============================================================
-// SAVE VERIFIED SOURCE DATA
+// SAVE VERIFIED DATA
 // ============================================================
 
 async function saveVerifiedRows(
   crop,
   rows,
-  recordedDate
+  fallbackDate
 ) {
-  if (!rows.length) {
-    return;
+  if (!rows || rows.length === 0) {
+    return false;
   }
 
-  const client =
-    await pool.connect();
+  var client = await pool.connect();
 
   try {
-    await client.query(
-      "BEGIN"
-    );
+    await client.query("BEGIN");
 
     // IMPORTANT:
-    // Delete only AFTER a verified source has
-    // successfully returned usable rows.
+    // Delete old data ONLY after verified fresh data exists.
     await client.query(
-      `DELETE FROM mandi_prices
-       WHERE LOWER(crop) = LOWER($1)`,
+      "DELETE FROM mandi_prices " +
+        "WHERE LOWER(crop) = LOWER($1)",
       [crop]
     );
 
-    for (const row of rows) {
+    for (var i = 0; i < rows.length; i++) {
+      var row = rows[i];
+
+      var recordedDate =
+        normalizeDate(row.recordedDate) ||
+        normalizeDate(fallbackDate);
+
       await client.query(
-        `INSERT INTO mandi_prices
-          (
-            crop,
-            mandi_name,
-            lat,
-            lng,
-            price,
-            trend,
-            recorded_date
-          )
-         VALUES
-          ($1,$2,$3,$4,$5,$6,$7)`,
+        "INSERT INTO mandi_prices " +
+          "(crop, mandi_name, lat, lng, price, trend, recorded_date) " +
+          "VALUES ($1, $2, $3, $4, $5, $6, $7)",
         [
           crop,
           row.mandi,
-          row._lat ?? null,
-          row._lng ?? null,
+          row._lat || null,
+          row._lng || null,
           row.price,
           row.trend || "steady",
-          row.recordedDate ||
-            recordedDate ||
-            null,
+          recordedDate,
         ]
       );
     }
 
-    await client.query(
-      "COMMIT"
-    );
+    await client.query("COMMIT");
 
     console.log(
-      `Saved ${rows.length} verified ${crop} prices.`
-    );
-  } catch (err) {
-    await client.query(
-      "ROLLBACK"
+      "Saved " +
+        String(rows.length) +
+        " verified " +
+        crop +
+        " rows to PostgreSQL."
     );
 
+    return true;
+  } catch (error) {
+    try {
+      await client.query("ROLLBACK");
+    } catch (rollbackError) {
+      console.error(
+        "Database rollback failed:",
+        rollbackError.message
+      );
+    }
+
     console.error(
-      "Could not save verified prices:",
-      err.message
+      "Could not save verified market data:",
+      error.message
     );
+
+    return false;
   } finally {
     client.release();
   }
@@ -896,310 +716,149 @@ async function getDatabaseRows(
   userLat,
   userLng
 ) {
-  const result =
-    await pool.query(
-      `SELECT
-         mandi_name,
-         lat,
-         lng,
-         price,
-         trend,
-         recorded_date
-       FROM (
-         SELECT
-           mandi_name,
-           lat,
-           lng,
-           price,
-           trend,
-           recorded_date,
-           ROW_NUMBER() OVER (
-             PARTITION BY
-               LOWER(TRIM(mandi_name))
-             ORDER BY
-               recorded_date DESC NULLS LAST
-           ) AS rn
-         FROM mandi_prices
-         WHERE crop ILIKE $1
-       ) AS latest
-       WHERE rn = 1
-       ORDER BY price DESC`,
-      [crop]
+  var result = await pool.query(
+    "SELECT " +
+      "mandi_name, " +
+      "lat, " +
+      "lng, " +
+      "price, " +
+      "trend, " +
+      "recorded_date " +
+      "FROM (" +
+      "SELECT " +
+      "mandi_name, " +
+      "lat, " +
+      "lng, " +
+      "price, " +
+      "trend, " +
+      "recorded_date, " +
+      "ROW_NUMBER() OVER (" +
+      "PARTITION BY LOWER(TRIM(mandi_name)) " +
+      "ORDER BY recorded_date DESC NULLS LAST" +
+      ") AS rn " +
+      "FROM mandi_prices " +
+      "WHERE LOWER(crop) = LOWER($1)" +
+      ") AS latest " +
+      "WHERE rn = 1 " +
+      "ORDER BY price DESC",
+    [crop]
+  );
+
+  return result.rows.map(function (row) {
+    var km = distanceKm(
+      userLat,
+      userLng,
+      row.lat,
+      row.lng
     );
 
-  return result.rows.map(
-    (r) => {
-      const km =
-        distanceKm(
-          userLat,
-          userLng,
-          r.lat,
-          r.lng
-        );
+    var transportCost =
+      estimateTransportCost(km);
 
-      const transportCost =
-        estimateTransportCost(
-          km
-        );
+    var price = toNumber(row.price);
 
-      const netPrice =
-        transportCost != null
-          ? Number(r.price) -
-            transportCost
-          : null;
+    var netPrice =
+      price !== null &&
+      transportCost !== null
+        ? price - transportCost
+        : price;
 
-      return {
-        mandi: r.mandi_name,
+    return {
+      mandi: row.mandi_name,
+      price: price,
+      trend: row.trend || "steady",
 
-        price: Number(
-          r.price
-        ),
+      distanceKm:
+        km !== null
+          ? Math.round(km)
+          : null,
 
-        trend:
-          r.trend ||
-          "steady",
+      transportCost: transportCost,
 
-        distanceKm:
-          km != null
-            ? Math.round(km)
-            : null,
+      netPrice: netPrice,
 
-        transportCost,
+      source: "database-fallback",
 
-        netPrice,
-
-        source:
-          "database-fallback",
-
-        recordedDate:
-          r.recorded_date ||
-          null,
-      };
-    }
-  );
+      recordedDate:
+        normalizeDate(row.recorded_date),
+    };
+  });
 }
 
 // ============================================================
-// BUILD FINAL API ROWS
+// FETCH FRESH MARKET DATA
 // ============================================================
 
-function buildApiRows(
-  rows,
-  userLat,
-  userLng
-) {
-  return rows.map(
-    (row) => {
-      const km =
-        distanceKm(
-          userLat,
-          userLng,
-          row._lat,
-          row._lng
-        );
-
-      const transportCost =
-        estimateTransportCost(
-          km
-        );
-
-      const netPrice =
-        transportCost != null
-          ? Number(row.price) -
-            transportCost
-          : Number(row.price);
-
-      return {
-        mandi: row.mandi,
-
-        price: Number(
-          row.price
-        ),
-
-        trend:
-          row.trend ||
-          "steady",
-
-        distanceKm:
-          km != null
-            ? Math.round(km)
-            : null,
-
-        transportCost,
-
-        netPrice,
-
-        minimumPrice:
-          row.minimumPrice ??
-          null,
-
-        maximumPrice:
-          row.maximumPrice ??
-          null,
-
-        arrivals:
-          row.arrivals ??
-          null,
-
-        source:
-          row.source,
-
-        recordedDate:
-          row.recordedDate ||
-          null,
-      };
-    }
-  );
-}
-
-// ============================================================
-// TRY OGD
-// ============================================================
-
-async function tryOgd(
-  crop
-) {
-  if (!OGD_API_KEY) {
-    return null;
-  }
-
-  // Try today first, then yesterday.
-  for (
-    let daysAgo = 0;
-    daysAgo <= 1;
-    daysAgo++
-  ) {
-    const dateInfo =
-      getIndiaDate(
-        -daysAgo
-      );
-
-    try {
-      console.log(
-        `Trying Government OGD for ${crop} on ${dateInfo.date}`
-      );
-
-      const report =
-        await fetchOgdMandiData(
-          crop,
-          dateInfo.date
-        );
-
-      const rows =
-        extractOgdRows(
-          report,
-          crop,
-          dateInfo.date
-        );
-
-      console.log(
-        `Government OGD returned ${rows.length} usable ${crop} rows.`
-      );
-
-      if (rows.length > 0) {
-        return {
-          rows,
-          date:
-            dateInfo.date,
-          source:
-            "data.gov.in",
-        };
-      }
-    } catch (err) {
-      if (
-        err.name ===
-        "AbortError"
-      ) {
-        console.error(
-          `Government OGD timed out for ${dateInfo.date}`
-        );
-      } else {
-        console.error(
-          `Government OGD failed for ${dateInfo.date}:`,
-          err.message
-        );
-      }
-    }
-  }
-
-  return null;
-}
-
-// ============================================================
-// TRY AGMARKNET
-// ============================================================
-
-async function tryAgmarknet(
-  crop
-) {
-  const sources = [
+async function getFreshMarketData(crop) {
+  var sources = [
     {
       name: "AGMARKNET",
-      fetch:
-        fetchAgmarknetStateReport,
+      fetch: fetchAgmarknetPrimary,
     },
     {
-      name:
-        "AGMARKNET-secondary",
-      fetch:
-        fetchAgmarknetCommodityWiseStateReport,
+      name: "AGMARKNET-secondary",
+      fetch: fetchAgmarknetSecondary,
     },
   ];
 
-  for (const source of sources) {
-    for (
-      let daysAgo = 0;
-      daysAgo <= 1;
-      daysAgo++
-    ) {
-      const dateInfo =
-        getIndiaDate(
-          -daysAgo
-        );
+  for (var sourceIndex = 0; sourceIndex < sources.length; sourceIndex++) {
+    var source = sources[sourceIndex];
+
+    for (var daysAgo = 0; daysAgo <= 1; daysAgo++) {
+      var dateInfo = getIndiaDate(-daysAgo);
 
       try {
         console.log(
-          `Trying ${source.name} for ${crop} on ${dateInfo.date}`
+          "Trying " +
+            source.name +
+            " for " +
+            crop +
+            " on " +
+            dateInfo.date
         );
 
-        const report =
-          await source.fetch(
-            dateInfo.date
-          );
+        var report = await source.fetch(
+          dateInfo.date
+        );
 
-        const rows =
-          extractAgmarknetRows(
-            report,
-            crop,
-            source.name,
-            dateInfo.date
-          );
+        var rows = extractAgmarknetRows(
+          report,
+          crop,
+          source.name,
+          dateInfo.date
+        );
 
         console.log(
-          `${source.name} returned ${rows.length} usable ${crop} rows.`
+          source.name +
+            " returned " +
+            String(rows.length) +
+            " usable rows for " +
+            crop +
+            " on " +
+            dateInfo.date
         );
 
         if (rows.length > 0) {
           return {
-            rows,
-            date:
-              dateInfo.date,
-            source:
-              source.name,
+            rows: rows,
+            source: source.name,
+            date: dateInfo.date,
           };
         }
-      } catch (err) {
-        if (
-          err.name ===
-          "AbortError"
-        ) {
+      } catch (error) {
+        if (error.name === "AbortError") {
           console.error(
-            `${source.name} timed out for ${dateInfo.date}`
+            source.name +
+              " timed out for " +
+              dateInfo.date
           );
         } else {
           console.error(
-            `${source.name} failed for ${dateInfo.date}:`,
-            err.message
+            source.name +
+              " failed for " +
+              dateInfo.date +
+              ": " +
+              error.message
           );
         }
       }
@@ -1207,6 +866,93 @@ async function tryAgmarknet(
   }
 
   return null;
+}
+
+// ============================================================
+// PREPARE API ROWS
+// ============================================================
+
+function prepareApiRows(
+  rows,
+  userLat,
+  userLng
+) {
+  return rows.map(function (row) {
+    var km = distanceKm(
+      userLat,
+      userLng,
+      row._lat,
+      row._lng
+    );
+
+    var transportCost =
+      estimateTransportCost(km);
+
+    var price = toNumber(row.price);
+
+    var netPrice =
+      price !== null &&
+      transportCost !== null
+        ? price - transportCost
+        : price;
+
+    return {
+      mandi: row.mandi,
+
+      price: price,
+
+      trend:
+        row.trend || "steady",
+
+      distanceKm:
+        km !== null
+          ? Math.round(km)
+          : null,
+
+      transportCost:
+        transportCost,
+
+      netPrice:
+        netPrice,
+
+      minimumPrice:
+        row.minimumPrice,
+
+      maximumPrice:
+        row.maximumPrice,
+
+      arrivals:
+        row.arrivals,
+
+      source:
+        row.source || "AGMARKNET",
+
+      recordedDate:
+        normalizeDate(row.recordedDate),
+    };
+  });
+}
+
+// ============================================================
+// SORT RESULTS
+// ============================================================
+
+function sortRows(rows) {
+  return rows.sort(function (a, b) {
+    var aValue =
+      a.netPrice !== null &&
+      a.netPrice !== undefined
+        ? a.netPrice
+        : a.price || 0;
+
+    var bValue =
+      b.netPrice !== null &&
+      b.netPrice !== undefined
+        ? b.netPrice
+        : b.price || 0;
+
+    return bValue - aValue;
+  });
 }
 
 // ============================================================
@@ -1216,192 +962,227 @@ async function tryAgmarknet(
 router.get(
   "/compare",
   requireAuth,
-  async (req, res) => {
-    const {
-      crop,
-      lat,
-      lng,
-    } = req.query;
+  async function (req, res) {
+    var crop = req.query.crop;
+    var lat = req.query.lat;
+    var lng = req.query.lng;
 
     if (!crop) {
       return res.status(400).json({
-        error:
-          "crop is required",
+        error: "crop is required",
       });
     }
 
-    const userLat =
-      lat &&
-      Number.isFinite(
-        parseFloat(lat)
-      )
-        ? parseFloat(lat)
-        : null;
+    crop = String(crop).trim();
 
-    const userLng =
-      lng &&
-      Number.isFinite(
-        parseFloat(lng)
-      )
-        ? parseFloat(lng)
-        : null;
+    var userLat = null;
+    var userLng = null;
 
-    const normalizedCrop =
-      String(crop).trim();
+    if (
+      lat !== undefined &&
+      lat !== null &&
+      lat !== ""
+    ) {
+      var parsedLat = Number(lat);
+
+      if (Number.isFinite(parsedLat)) {
+        userLat = parsedLat;
+      }
+    }
+
+    if (
+      lng !== undefined &&
+      lng !== null &&
+      lng !== ""
+    ) {
+      var parsedLng = Number(lng);
+
+      if (Number.isFinite(parsedLng)) {
+        userLng = parsedLng;
+      }
+    }
 
     try {
       // ======================================================
-      // 1. GOVERNMENT OGD
+      // STEP 1:
+      // Try official AGMARKNET
       // ======================================================
 
-      let verified =
-        await tryOgd(
-          normalizedCrop
-        );
-
-      // ======================================================
-      // 2. AGMARKNET
-      // ======================================================
-
-      if (!verified) {
-        verified =
-          await tryAgmarknet(
-            normalizedCrop
-          );
-      }
-
-      // ======================================================
-      // VERIFIED LIVE GOVERNMENT DATA
-      // ======================================================
+      var freshData =
+        await getFreshMarketData(crop);
 
       if (
-        verified &&
-        verified.rows.length > 0
+        freshData &&
+        freshData.rows &&
+        freshData.rows.length > 0
       ) {
-        const rowsWithCoordinates =
+        console.log(
+          "Fresh verified data found from " +
+            freshData.source +
+            " for " +
+            crop
+        );
+
+        var rowsWithCoordinates =
           await addDatabaseCoordinates(
-            verified.rows
+            freshData.rows
           );
 
-        const rows =
-          buildApiRows(
-            rowsWithCoordinates,
-            userLat,
-            userLng
-          );
-
-        rows.sort(
-          (a, b) =>
-            (b.netPrice ??
-              b.price) -
-            (a.netPrice ??
-              a.price)
-        );
-
-        // Save only verified data.
-        await saveVerifiedRows(
-          normalizedCrop,
+        var apiRows = prepareApiRows(
           rowsWithCoordinates,
-          verified.date
-        );
-
-        return res.json({
-          crop:
-            normalizedCrop,
-
-          state:
-            "Maharashtra",
-
-          source:
-            verified.source,
-
-          dataStatus:
-            "live",
-
-          recordedDate:
-            verified.date,
-
-          rows,
-
-          best:
-            rows[0] ||
-            null,
-        });
-      }
-
-      // ======================================================
-      // 3. DATABASE VERIFIED CACHE
-      // ======================================================
-
-      console.warn(
-        `Government sources unavailable for ${normalizedCrop}. Using PostgreSQL verified cache.`
-      );
-
-      const rows =
-        await getDatabaseRows(
-          normalizedCrop,
           userLat,
           userLng
         );
 
-      rows.sort(
-        (a, b) =>
-          (b.netPrice ??
-            b.price) -
-          (a.netPrice ??
-            a.price)
-      );
+        apiRows = sortRows(apiRows);
 
-      if (rows.length === 0) {
-        return res.status(503).json({
-          error:
-            "No verified market price data is currently available.",
-          crop:
-            normalizedCrop,
-          state:
-            "Maharashtra",
-          dataStatus:
-            "unavailable",
-          rows: [],
-          best: null,
+        // ====================================================
+        // STEP 2:
+        // Cache verified data safely
+        // ====================================================
+
+        var saved = await saveVerifiedRows(
+          crop,
+          rowsWithCoordinates,
+          freshData.date
+        );
+
+        if (!saved) {
+          console.warn(
+            "Fresh data was obtained, but PostgreSQL cache update failed."
+          );
+        }
+
+        return res.json({
+          crop: crop,
+          state: "Maharashtra",
+
+          source:
+            freshData.source,
+
+          dataStatus: "live",
+
+          recordedDate:
+            freshData.date,
+
+          rows: apiRows,
+
+          best:
+            apiRows.length > 0
+              ? apiRows[0]
+              : null,
         });
       }
 
-      return res.json({
-        crop:
-          normalizedCrop,
+      // ======================================================
+      // STEP 3:
+      // Official sources unavailable
+      // Use PostgreSQL verified cache
+      // ======================================================
 
-        state:
-          "Maharashtra",
+      console.warn(
+        "Official mandi sources unavailable for " +
+          crop +
+          ". Using PostgreSQL cache."
+      );
+
+      var cachedRows =
+        await getDatabaseRows(
+          crop,
+          userLat,
+          userLng
+        );
+
+      cachedRows = sortRows(
+        cachedRows
+      );
+
+      return res.json({
+        crop: crop,
+
+        state: "Maharashtra",
 
         source:
           "database-fallback",
 
         dataStatus:
-          "cached",
+          cachedRows.length > 0
+            ? "cached"
+            : "no-data",
 
         recordedDate:
-          rows[0]?.recordedDate ||
-          null,
+          cachedRows.length > 0
+            ? cachedRows[0].recordedDate
+            : null,
 
-        rows,
+        rows: cachedRows,
 
         best:
-          rows[0] ||
-          null,
+          cachedRows.length > 0
+            ? cachedRows[0]
+            : null,
       });
-    } catch (err) {
+    } catch (error) {
       console.error(
-        "Price comparison error:",
-        err
+        "Price comparison route error:",
+        error
       );
 
-      return res.status(500).json({
-        error:
-          "Unable to load market prices right now.",
-      }); 
+      // ======================================================
+      // FINAL SAFETY FALLBACK
+      // ======================================================
+
+      try {
+        var emergencyRows =
+          await getDatabaseRows(
+            crop,
+            userLat,
+            userLng
+          );
+
+        emergencyRows =
+          sortRows(emergencyRows);
+
+        return res.json({
+          crop: crop,
+
+          state: "Maharashtra",
+
+          source:
+            "database-fallback",
+
+          dataStatus:
+            emergencyRows.length > 0
+              ? "cached"
+              : "no-data",
+
+          recordedDate:
+            emergencyRows.length > 0
+              ? emergencyRows[0].recordedDate
+              : null,
+
+          rows: emergencyRows,
+
+          best:
+            emergencyRows.length > 0
+              ? emergencyRows[0]
+              : null,
+        });
+      } catch (databaseError) {
+        console.error(
+          "Emergency database fallback failed:",
+          databaseError
+        );
+
+        return res.status(500).json({
+          error:
+            "Unable to load market prices right now.",
+        });
+      }
     }
   }
 );
 
 module.exports = router;
+
+
