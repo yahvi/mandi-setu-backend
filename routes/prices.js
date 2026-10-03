@@ -18,7 +18,7 @@ const OGD_RESOURCE_ID =
 const OGD_API_KEY = process.env.DATA_GOV_API_KEY || "";
 
 const OGD_BASE_URL =
-  `https://api.data.gov.in/resource/${OGD_RESOURCE_ID}`;
+  "https://api.data.gov.in/resource/" + OGD_RESOURCE_ID;
 
 // ============================================================
 // DISTANCE
